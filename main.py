@@ -397,7 +397,7 @@ async def sse_endpoint(request: Request):
             session_id = str(uuid.uuid4())
             endpoint = f"/messages/?session_id={session_id}"
             logger.info(f"SSE send: endpoint: {endpoint}")
-            yield make_sse_message(endpoint, event="endpoint")
+            yield make_sse_message(json.dumps(endpoint), event="endpoint")
 
             # 1. initialize (id=0)
             init_event = {
@@ -423,13 +423,16 @@ async def sse_endpoint(request: Request):
             yield make_sse_message(json.dumps(capabilities), event="capabilities")
 
             # 3. tools (id=2)
-            logger.info(f"SSE tools dict: {len(tools)} tools: {list(tools.keys())}")
             mcp_tools = []
             for name, tool_func in tools.items():
                 tool_schema = {
                     "name": name,
                     "description": tool_func.__doc__ or "No description available",
-                    "inputSchema": {"type": "object", "properties": {}, "required": []}
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
                 }
                 if hasattr(tool_func, "tool_definition") and isinstance(tool_func.tool_definition, dict):
                     definition = tool_func.tool_definition
@@ -437,44 +440,40 @@ async def sse_endpoint(request: Request):
                     params_info = definition.get("parameters") or definition.get("parameter_descriptions")
                     if isinstance(params_info, dict):
                         for param_name, param_desc in params_info.items():
-                            tool_schema["inputSchema"]["properties"][param_name] = {"type": "string", "description": str(param_desc)}
-                            tool_schema["inputSchema"]["required"].append(param_name)
+                            tool_schema["inputSchema"]["properties"][param_name] = {
+                                "type": "string",
+                                "description": str(param_desc)
+                            }
+                            if param_name not in tool_schema["inputSchema"]["required"]:
+                                tool_schema["inputSchema"]["required"].append(param_name)
                     elif isinstance(params_info, list):
                         for param in params_info:
                             if isinstance(param, dict) and "name" in param:
-                                tool_schema["inputSchema"]["properties"][param["name"]] = {"type": param.get("type", "string"), "description": param.get("description", "")}
+                                tool_schema["inputSchema"]["properties"][param["name"]] = {
+                                    "type": param.get("type", "string"),
+                                    "description": param.get("description", "")
+                                }
                                 if param.get("required", False):
                                     tool_schema["inputSchema"]["required"].append(param["name"])
                 mcp_tools.append(tool_schema)
-            tools_list_response = {
+            tools_event = {
                 "jsonrpc": "2.0",
                 "id": 2,
                 "result": {"tools": mcp_tools}
             }
-            logger.info(f"SSE send: tools: {tools_list_response}")
-            yield make_sse_message(json.dumps(tools_list_response), event="tools")
+            logger.info(f"SSE send: tools: {tools_event}")
+            yield make_sse_message(json.dumps(tools_event), event="tools")
 
-            heartbeat_count = 0
+            # Можно добавить heartbeat или другие события по необходимости
             while True:
                 await asyncio.sleep(30)
-                heartbeat_count += 1
-                heartbeat = {
-                    "jsonrpc": "2.0",
-                    "method": "notifications/ping",
-                    "params": {"timestamp": time.time(), "count": heartbeat_count}
-                }
-                logger.info(f"SSE send: heartbeat: {heartbeat}")
-                yield make_sse_message(json.dumps(heartbeat), event="heartbeat")
+                yield make_sse_message(json.dumps({"event": "heartbeat"}), event="heartbeat")
         except asyncio.CancelledError:
             logger.info("SSE client disconnected")
             return
         except Exception as e:
-            logger.exception(f"Error in SSE event generator: {e}")
-            error_response = {
-                "jsonrpc": "2.0",
-                "error": {"code": -32603, "message": f"Internal error: {str(e)}"}
-            }
-            yield make_sse_message(json.dumps(error_response), event="error")
+            logger.exception(f"SSE event_generator error: {e}")
+            yield make_sse_message(json.dumps({"error": str(e)}), event="error")
 
     return StreamingResponse(
         event_generator(),
