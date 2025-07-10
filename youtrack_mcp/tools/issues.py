@@ -255,10 +255,12 @@ class IssueTools:
             issue_id: The issue ID or readable ID
             
         Returns:
-            Raw JSON string with the issue data
+            Raw JSON string with the issue data (including comments)
         """
         try:
-            raw_issue = self.client.get(f"issues/{issue_id}")
+            # Добавляем параметр fields для получения комментариев
+            params = {"fields": "id,summary,description,created,updated,project(id,name,shortName),reporter(id,login,name),assignee(id,login,name),customFields(id,name,value),comments(id,text,author(login,name),created,updated)"}
+            raw_issue = self.client.get(f"issues/{issue_id}", params=params)
             return json.dumps(raw_issue, indent=2)
         except Exception as e:
             logger.exception(f"Error getting raw issue {issue_id}")
