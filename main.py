@@ -358,6 +358,14 @@ async def list_tools():
     return {"tools": tool_list}
 
 
+# --- SSE message helper ---
+def make_sse_message(data, event=None):
+    msg = ""
+    if event:
+        msg += f"event: {event}\n"
+    msg += f"data: {data}\n\n"
+    return msg
+
 @app.get("/sse")
 @app.post("/sse")
 @app.head("/sse")
@@ -389,7 +397,7 @@ async def sse_endpoint(request: Request):
             try:
                 init_event = {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'protocolVersion': '2024-11-05', 'capabilities': {}}}
                 logger.info(f"SSE send: initialize: {init_event}")
-                yield f"data: {json.dumps(init_event)}\n\n"
+                yield make_sse_message(json.dumps(init_event), event="initialize")
             except Exception as e:
                 logger.exception(f"SSE error on yield initialize: {e}")
                 raise
@@ -410,7 +418,7 @@ async def sse_endpoint(request: Request):
                     }
                 }
                 logger.info(f"SSE send: capabilities: {capabilities}")
-                yield f"data: {json.dumps(capabilities)}\n\n"
+                yield make_sse_message(json.dumps(capabilities), event="capabilities")
             except Exception as e:
                 logger.exception(f"SSE error on yield capabilities: {e}")
                 raise
@@ -458,7 +466,7 @@ async def sse_endpoint(request: Request):
                         }
                     }
                     logger.info(f"SSE send: tools: {tools_list_response}")
-                    yield f"data: {json.dumps(tools_list_response)}\n\n"
+                    yield make_sse_message(json.dumps(tools_list_response), event="tools")
             except Exception as e:
                 logger.exception(f"SSE error on yield tools: {e}")
                 raise
@@ -477,7 +485,7 @@ async def sse_endpoint(request: Request):
                 }
                 try:
                     logger.info(f"SSE send: heartbeat: {heartbeat}")
-                    yield f"data: {json.dumps(heartbeat)}\n\n"
+                    yield make_sse_message(json.dumps(heartbeat), event="heartbeat")
                 except Exception as e:
                     logger.exception(f"SSE error on yield heartbeat: {e}")
                     raise
@@ -494,7 +502,7 @@ async def sse_endpoint(request: Request):
                     "message": f"Internal error: {str(e)}"
                 }
             }
-            yield f"data: {json.dumps(error_response)}\n\n"
+            yield make_sse_message(json.dumps(error_response), event="error")
 
     return StreamingResponse(
         event_generator(),
