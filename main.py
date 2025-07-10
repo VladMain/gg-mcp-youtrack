@@ -480,6 +480,7 @@ async def sse_endpoint(request: Request):
         event_generator(),
         media_type="text/event-stream",
         headers={
+            "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "Access-Control-Allow-Origin": "*",
