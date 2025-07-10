@@ -393,11 +393,11 @@ async def sse_endpoint(request: Request):
     async def event_generator() -> AsyncGenerator[str, None]:
         try:
             logger.info("SSE event_generator: start")
-            # Сначала отправляем endpoint
+            # Сначала отправляем endpoint (без json.dumps!)
             session_id = str(uuid.uuid4())
             endpoint = f"/messages/?session_id={session_id}"
             logger.info(f"SSE send: endpoint: {endpoint}")
-            yield make_sse_message(json.dumps(endpoint), event="endpoint")
+            yield make_sse_message(endpoint, event="endpoint")
 
             # 1. initialize (id=0)
             init_event = {
