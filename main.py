@@ -811,14 +811,14 @@ async def sse_call_tool(request: Request):
 async def messages_endpoint(request: Request, session_id: str = Query(None)):
     """
     MCP-compatible endpoint for POST /messages/?session_id=... (SSE MCP clients).
-    Принимает MCP-команды (JSON-RPC) и возвращает результат, аналогично /mcp.
+    Возвращает ответы строго в формате JSON-RPC 2.0 (jsonrpc, id, result/error).
     """
     try:
         body = await request.json()
         method = body.get("method", "")
         params = body.get("params", {})
-        logger.info(f"/messages/ request: method={method}, params={params}, session_id={session_id}")
-        # Переиспользуем MCP-логику
+        req_id = body.get("id", None)
+        logger.info(f"/messages/ request: method={method}, params={params}, session_id={session_id}, id={req_id}")
         if method == "tools/list":
             mcp_tools = []
             for name, tool_func in tools.items():
@@ -853,26 +853,61 @@ async def messages_endpoint(request: Request, session_id: str = Query(None)):
                                 if param.get("required", False):
                                     tool_schema["inputSchema"]["required"].append(param["name"])
                 mcp_tools.append(tool_schema)
-            return {"result": {"tools": mcp_tools}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"tools": mcp_tools}
+            }
         elif method == "tools/call":
             tool_name = params.get("name")
             arguments = params.get("arguments", {})
             if not tool_name:
-                return {"error": {"code": -32602, "message": "Invalid params: missing tool name"}}
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {"code": -32602, "message": "Invalid params: missing tool name"}
+                }
             if tool_name not in tools:
-                return {"error": {"code": -32601, "message": f"Tool '{tool_name}' not found"}}
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {"code": -32601, "message": f"Tool '{tool_name}' not found"}
+                }
             try:
                 logger.info(f"/messages/ executing tool: {tool_name} with arguments: {arguments}")
                 result = tools[tool_name](**arguments)
-                return {"result": {"content": [{"type": "text", "text": str(result)}]}}
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": str(result)
+                            }
+                        ]
+                    }
+                }
             except Exception as e:
                 logger.exception(f"Error executing MCP tool {tool_name}")
-                return {"error": {"code": -32603, "message": f"Tool execution failed: {str(e)}"}}
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {"code": -32603, "message": f"Tool execution failed: {str(e)}"}
+                }
         else:
-            return {"error": {"code": -32601, "message": f"Method '{method}' not found"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32601, "message": f"Method '{method}' not found"}
+            }
     except Exception as e:
         logger.exception("Error processing /messages/ request")
-        return {"error": {"code": -32603, "message": f"Internal error: {str(e)}"}}
+        return {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": -32603, "message": f"Internal error: {str(e)}"}
+        }
 
 
 @app.get("/tools")
