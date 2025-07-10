@@ -414,7 +414,7 @@ async def sse_endpoint(request: Request):
                     "result": {
                         "protocolVersion": "2024-11-05",
                         "capabilities": {
-                            "tools": {}
+                            "tools": {"list": True, "call": True}
                         },
                         "serverInfo": {
                             "name": config.MCP_SERVER_NAME,
