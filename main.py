@@ -10,6 +10,7 @@ import sys
 from typing import Dict, Any, Optional
 import json
 from contextlib import asynccontextmanager
+import uuid
 
 # Try importing nest_asyncio but don't fail if it's not available
 try:
@@ -392,8 +393,12 @@ async def sse_endpoint(request: Request):
     async def event_generator() -> AsyncGenerator[str, None]:
         try:
             logger.info("SSE event_generator: start")
-            # Send initial connection event
-            logger.info("SSE client connected")
+            # Сначала отправляем endpoint
+            session_id = str(uuid.uuid4())
+            endpoint = f"/messages/?session_id={session_id}"
+            logger.info(f"SSE send: endpoint: {endpoint}")
+            yield make_sse_message(endpoint, event="endpoint")
+            # Далее стандартные MCP события
             try:
                 init_event = {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'protocolVersion': '2024-11-05', 'capabilities': {}}}
                 logger.info(f"SSE send: initialize: {init_event}")
