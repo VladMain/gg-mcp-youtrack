@@ -56,12 +56,15 @@ class Config:
         Raises:
             ValueError: If required settings are missing or invalid
         """
-        # API token is always required
+        # For MCP testing, allow running without API token
+        # API token is required for actual YouTrack operations
         if not cls.YOUTRACK_API_TOKEN:
-            raise ValueError("YouTrack API token is required. Provide it using YOUTRACK_API_TOKEN environment variable or in configuration.")
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning("YouTrack API token not provided. YouTrack operations will fail.")
         
         # URL is only required for self-hosted instances (Cloud instances can use API token only)
-        if not cls.YOUTRACK_CLOUD and not cls.YOUTRACK_URL:
+        if not cls.YOUTRACK_CLOUD and not cls.YOUTRACK_URL and cls.YOUTRACK_API_TOKEN:
             raise ValueError("YouTrack URL is required for self-hosted instances. Provide it using YOUTRACK_URL environment variable or set YOUTRACK_CLOUD=true for cloud instances.")
         
         # If URL is provided, ensure it doesn't end with a trailing slash
@@ -110,6 +113,10 @@ class Config:
         # If URL is explicitly provided, use it regardless of cloud setting
         if cls.YOUTRACK_URL:
             return f"{cls.YOUTRACK_URL}/api"
+            
+        # For testing without token, return a placeholder URL
+        if not cls.YOUTRACK_API_TOKEN:
+            return "https://test.youtrack.cloud/api"
             
         # For cloud instances without explicit URL, try to extract from token
         if cls.is_cloud_instance():

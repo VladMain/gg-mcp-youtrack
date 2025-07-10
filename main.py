@@ -38,6 +38,7 @@ from fastapi.responses import StreamingResponse
 import asyncio
 from typing import AsyncGenerator
 import time
+from fastapi import Response
 
 # Set up logging
 logging.basicConfig(
@@ -101,6 +102,196 @@ class ToolRequest(BaseModel):
 class ToolResponse(BaseModel):
     result: Any = Field(..., description="Result of the tool execution")
 
+# MCP Protocol Models
+class MCPToolCall(BaseModel):
+    tool: str = Field(..., description="Name of the tool to call")
+    arguments: Dict[str, Any] = Field(default={}, description="Arguments for the tool")
+
+class MCPListToolsRequest(BaseModel):
+    """MCP request to list available tools."""
+    pass
+
+class MCPCallToolRequest(BaseModel):
+    """MCP request to call a tool."""
+    method: str = Field(..., description="Method name (e.g., 'tools/call')")
+    params: Dict[str, Any] = Field(..., description="Request parameters")
+
+class MCPResponse(BaseModel):
+    """MCP response format."""
+    result: Any = Field(None, description="Result data")
+    error: Optional[Dict[str, Any]] = Field(None, description="Error information")
+
+# MCP Endpoints for Langflow compatibility
+@app.post("/mcp")
+async def mcp_endpoint(request: Request):
+    """
+    Main MCP endpoint for Langflow integration.
+    Handles MCP protocol messages including tools/list and tools/call.
+    """
+    try:
+        body = await request.json()
+        method = body.get("method", "")
+        params = body.get("params", {})
+        
+        logger.info(f"MCP request: method={method}, params={params}")
+        
+        if method == "tools/list":
+            # Return list of available tools in MCP format
+            mcp_tools = []
+            for name, tool_func in tools.items():
+                tool_schema = {
+                    "name": name,
+                    "description": tool_func.__doc__ or "No description available",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                }
+                
+                # Extract parameter information if available
+                if hasattr(tool_func, "tool_definition") and isinstance(tool_func.tool_definition, dict):
+                    definition = tool_func.tool_definition
+                    tool_schema["description"] = definition.get("description", tool_schema["description"])
+                    
+                    # Add parameter schema
+                    params_info = definition.get("parameters") or definition.get("parameter_descriptions")
+                    if isinstance(params_info, dict):
+                        for param_name, param_desc in params_info.items():
+                            tool_schema["inputSchema"]["properties"][param_name] = {
+                                "type": "string",
+                                "description": str(param_desc)
+                            }
+                            if param_name not in tool_schema["inputSchema"]["required"]:
+                                tool_schema["inputSchema"]["required"].append(param_name)
+                    elif isinstance(params_info, list):
+                        for param in params_info:
+                            if isinstance(param, dict) and "name" in param:
+                                tool_schema["inputSchema"]["properties"][param["name"]] = {
+                                    "type": param.get("type", "string"),
+                                    "description": param.get("description", "")
+                                }
+                                if param.get("required", False):
+                                    tool_schema["inputSchema"]["required"].append(param["name"])
+                
+                mcp_tools.append(tool_schema)
+            
+            return {"result": {"tools": mcp_tools}}
+            
+        elif method == "tools/call":
+            # Call a specific tool
+            tool_name = params.get("name")
+            arguments = params.get("arguments", {})
+            
+            if not tool_name:
+                return {
+                    "error": {
+                        "code": -32602,
+                        "message": "Invalid params: missing tool name"
+                    }
+                }
+            
+            if tool_name not in tools:
+                return {
+                    "error": {
+                        "code": -32601,
+                        "message": f"Tool '{tool_name}' not found"
+                    }
+                }
+            
+            try:
+                # Execute tool
+                logger.info(f"Executing MCP tool: {tool_name} with arguments: {arguments}")
+                result = tools[tool_name](**arguments)
+                
+                return {
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": str(result)
+                            }
+                        ]
+                    }
+                }
+            except Exception as e:
+                logger.exception(f"Error executing MCP tool {tool_name}")
+                return {
+                    "error": {
+                        "code": -32603,
+                        "message": f"Tool execution failed: {str(e)}"
+                    }
+                }
+        else:
+            return {
+                "error": {
+                    "code": -32601,
+                    "message": f"Method '{method}' not found"
+                }
+            }
+            
+    except Exception as e:
+        logger.exception("Error processing MCP request")
+        return {
+            "error": {
+                "code": -32603,
+                "message": f"Internal error: {str(e)}"
+            }
+        }
+
+@app.get("/mcp/tools")
+async def mcp_list_tools():
+    """
+    MCP-compatible endpoint to list all available tools.
+    Returns tools in the format expected by MCP clients like Langflow.
+    """
+    try:
+        mcp_tools = []
+        for name, tool_func in tools.items():
+            tool_schema = {
+                "name": name,
+                "description": tool_func.__doc__ or "No description available",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+            
+            # Extract parameter information if available
+            if hasattr(tool_func, "tool_definition") and isinstance(tool_func.tool_definition, dict):
+                definition = tool_func.tool_definition
+                tool_schema["description"] = definition.get("description", tool_schema["description"])
+                
+                # Add parameter schema
+                params_info = definition.get("parameters") or definition.get("parameter_descriptions")
+                if isinstance(params_info, dict):
+                    for param_name, param_desc in params_info.items():
+                        tool_schema["inputSchema"]["properties"][param_name] = {
+                            "type": "string",
+                            "description": param_desc
+                        }
+                        tool_schema["inputSchema"]["required"].append(param_name)
+                elif isinstance(params_info, list):
+                    for param in params_info:
+                        if isinstance(param, dict) and "name" in param:
+                            tool_schema["inputSchema"]["properties"][param["name"]] = {
+                                "type": param.get("type", "string"),
+                                "description": param.get("description", "")
+                            }
+                            if param.get("required", False):
+                                tool_schema["inputSchema"]["required"].append(param["name"])
+            
+            mcp_tools.append(tool_schema)
+        
+        return {"tools": mcp_tools}
+    except Exception as e:
+        logger.exception("Error listing MCP tools")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to list tools: {str(e)}"}
+        )
+
 @app.post("/api/tools/{tool_name}")
 async def execute_tool(tool_name: str, request: Request):
     """
@@ -141,132 +332,169 @@ async def execute_tool(tool_name: str, request: Request):
 async def list_tools():
     """
     List all available tools.
-    
     Returns:
-        List of available tools with their definitions
+        List of available tools with their definitions (MCP-compatible array)
     """
-    tool_definitions = {}
-    
+    tool_list = []
     for name, tool_func in tools.items():
-        # Get tool metadata if available
-        if hasattr(tool_func, "tool_definition"):
-            tool_definitions[name] = tool_func.tool_definition
+        tool_info = {"name": name}
+        param_list = []
+        if hasattr(tool_func, "tool_definition") and isinstance(tool_func.tool_definition, dict):
+            definition = tool_func.tool_definition
+            # Описание
+            tool_info["description"] = definition.get("description", tool_func.__doc__ or "No description available")
+            # Параметры
+            params = definition.get("parameters") or definition.get("parameter_descriptions")
+            if isinstance(params, dict):
+                param_list = [
+                    {"name": k, "description": v, "type": "string"} for k, v in params.items()
+                ]
+            elif isinstance(params, list):
+                param_list = [p for p in params if isinstance(p, dict) and "name" in p and "description" in p]
         else:
-            # Basic definition if metadata not available
-            tool_definitions[name] = {
-                "name": name,
-                "description": tool_func.__doc__ or "No description available"
-            }
-    
-    return {"tools": tool_definitions}
+            tool_info["description"] = tool_func.__doc__ or "No description available"
+        tool_info["parameters"] = param_list
+        tool_list.append(tool_info)
+    return {"tools": tool_list}
 
 
 @app.get("/sse")
+@app.post("/sse")
+@app.head("/sse")
 async def sse_endpoint(request: Request):
     """
-    SSE endpoint for n8n MCP integration.
+    SSE endpoint for MCP integration with Langflow.
     Provides server-sent events stream with MCP server information and tools.
+    Supports GET, POST, and HEAD methods for compatibility with different clients.
     """
-
+    # Handle HEAD requests quickly
+    if request.method == "HEAD":
+        return Response(
+            content="",
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, HEAD, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            }
+        )
+    
     async def event_generator() -> AsyncGenerator[str, None]:
         try:
+            logger.info("SSE event_generator: start")
             # Send initial connection event
             logger.info("SSE client connected")
-            yield f"event: connection\ndata: {json.dumps({'type': 'connected', 'message': 'Connected to YouTrack MCP Server', 'version': APP_VERSION})}\n\n"
+            try:
+                init_event = {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'protocolVersion': '2024-11-05', 'capabilities': {}}}
+                logger.info(f"SSE send: initialize: {init_event}")
+                yield f"data: {json.dumps(init_event)}\n\n"
+            except Exception as e:
+                logger.exception(f"SSE error on yield initialize: {e}")
+                raise
 
-            # Send server info
-            server_info = {
-                "type": "server_info",
-                "name": config.MCP_SERVER_NAME,
-                "description": config.MCP_SERVER_DESCRIPTION,
-                "version": APP_VERSION,
-                "transport": "http"
-            }
-            yield f"event: server_info\ndata: {json.dumps(server_info)}\n\n"
-
-            # Send available tools
-            if tools:
-                tool_list = []
-                for name, tool_func in tools.items():
-                    tool_info = {
-                        "name": name,
-                        "description": tool_func.__doc__ or "No description available"
+            try:
+                capabilities = {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "result": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {
+                            "tools": {}
+                        },
+                        "serverInfo": {
+                            "name": config.MCP_SERVER_NAME,
+                            "version": APP_VERSION
+                        }
                     }
-
-                    # Add tool definition if available - but only serializable parts
-                    if hasattr(tool_func, "tool_definition"):
-                        definition = tool_func.tool_definition
-                        if isinstance(definition, dict):
-                            # Only include serializable fields
-                            safe_definition = {}
-                            for key, value in definition.items():
-                                # Skip function references and other non-serializable objects
-                                if key == "function" or callable(value):
-                                    continue
-                                try:
-                                    # Test if value is JSON serializable
-                                    json.dumps(value)
-                                    safe_definition[key] = value
-                                except (TypeError, ValueError):
-                                    # Skip non-serializable values
-                                    logger.debug(f"Skipping non-serializable field {key} in tool {name}")
-                                    continue
-
-                            # Only update with safe fields
-                            if "description" in safe_definition:
-                                tool_info["description"] = safe_definition["description"]
-                            if "parameters" in safe_definition:
-                                tool_info["parameters"] = safe_definition["parameters"]
-                            if "parameter_descriptions" in safe_definition:
-                                tool_info["parameter_descriptions"] = safe_definition["parameter_descriptions"]
-
-                    # Extract parameter information from docstring
-                    if hasattr(tool_func, "__wrapped__") and hasattr(tool_func.__wrapped__, "__doc__"):
-                        wrapped_doc = tool_func.__wrapped__.__doc__
-                        if wrapped_doc and isinstance(wrapped_doc, str):
-                            tool_info["description"] = wrapped_doc.strip().split('\n')[0] or tool_info["description"]
-
-                    tool_list.append(tool_info)
-
-                tools_event = {
-                    "type": "tools",
-                    "tools": tool_list,
-                    "count": len(tool_list)
                 }
-                yield f"event: tools\ndata: {json.dumps(tools_event)}\n\n"
-                logger.info(f"Sent {len(tool_list)} tools via SSE")
-            else:
-                logger.warning("No tools available to send via SSE")
-                yield f"event: tools\ndata: {json.dumps({'type': 'tools', 'tools': [], 'count': 0})}\n\n"
+                logger.info(f"SSE send: capabilities: {capabilities}")
+                yield f"data: {json.dumps(capabilities)}\n\n"
+            except Exception as e:
+                logger.exception(f"SSE error on yield capabilities: {e}")
+                raise
 
-            # Keep connection alive with heartbeat
+            logger.info(f"SSE tools dict: {len(tools)} tools: {list(tools.keys())}")
+            try:
+                if tools:
+                    mcp_tools = []
+                    for name, tool_func in tools.items():
+                        tool_schema = {
+                            "name": name,
+                            "description": tool_func.__doc__ or "No description available",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {},
+                                "required": []
+                            }
+                        }
+                        if hasattr(tool_func, "tool_definition") and isinstance(tool_func.tool_definition, dict):
+                            definition = tool_func.tool_definition
+                            tool_schema["description"] = definition.get("description", tool_schema["description"])
+                            params_info = definition.get("parameters") or definition.get("parameter_descriptions")
+                            if isinstance(params_info, dict):
+                                for param_name, param_desc in params_info.items():
+                                    tool_schema["inputSchema"]["properties"][param_name] = {
+                                        "type": "string",
+                                        "description": str(param_desc)
+                                    }
+                                    tool_schema["inputSchema"]["required"].append(param_name)
+                            elif isinstance(params_info, list):
+                                for param in params_info:
+                                    if isinstance(param, dict) and "name" in param:
+                                        tool_schema["inputSchema"]["properties"][param["name"]] = {
+                                            "type": param.get("type", "string"),
+                                            "description": param.get("description", "")
+                                        }
+                                        if param.get("required", False):
+                                            tool_schema["inputSchema"]["required"].append(param["name"])
+                        mcp_tools.append(tool_schema)
+                    tools_list_response = {
+                        "jsonrpc": "2.0",
+                        "id": 3,
+                        "result": {
+                            "tools": mcp_tools
+                        }
+                    }
+                    logger.info(f"SSE send: tools: {tools_list_response}")
+                    yield f"data: {json.dumps(tools_list_response)}\n\n"
+            except Exception as e:
+                logger.exception(f"SSE error on yield tools: {e}")
+                raise
+
             heartbeat_count = 0
             while True:
-                if await request.is_disconnected():
-                    logger.info("SSE client disconnected")
-                    break
-
-                # Send heartbeat every 30 seconds
+                await asyncio.sleep(30)  # Send heartbeat every 30 seconds
                 heartbeat_count += 1
-                yield f"event: heartbeat\ndata: {json.dumps({'type': 'heartbeat', 'timestamp': int(time.time()), 'count': heartbeat_count})}\n\n"
-
-                # Log heartbeat every 10th time (5 minutes)
-                if heartbeat_count % 10 == 0:
-                    logger.debug(f"SSE connection alive, sent {heartbeat_count} heartbeats")
-
-                await asyncio.sleep(30)
-
+                heartbeat = {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/ping",
+                    "params": {
+                        "timestamp": time.time(),
+                        "count": heartbeat_count
+                    }
+                }
+                try:
+                    logger.info(f"SSE send: heartbeat: {heartbeat}")
+                    yield f"data: {json.dumps(heartbeat)}\n\n"
+                except Exception as e:
+                    logger.exception(f"SSE error on yield heartbeat: {e}")
+                    raise
+                
         except asyncio.CancelledError:
-            logger.info("SSE connection cancelled")
-            raise
+            logger.info("SSE client disconnected")
+            return
         except Exception as e:
-            logger.exception("Error in SSE endpoint")
-            error_msg = str(e)
-            # Make sure error message is also JSON serializable
-            try:
-                yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': error_msg})}\n\n"
-            except:
-                yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': 'Unknown error'})}\n\n"
+            logger.exception(f"Error in SSE event generator: {e}")
+            error_response = {
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32603,
+                    "message": f"Internal error: {str(e)}"
+                }
+            }
+            yield f"data: {json.dumps(error_response)}\n\n"
 
     return StreamingResponse(
         event_generator(),
@@ -274,10 +502,9 @@ async def sse_endpoint(request: Request):
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",  # Disable Nginx buffering
             "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "*"
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization",
         }
     )
 
@@ -406,13 +633,14 @@ async def sse_list_tools():
 
 @app.options("/sse")
 async def sse_options():
-    """Handle OPTIONS request for SSE endpoint."""
-    return JSONResponse(
-        content={"message": "OK"},
+    """Handle preflight CORS requests for SSE endpoint."""
+    return Response(
+        content="",
         headers={
             "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "*"
+            "Access-Control-Allow-Methods": "GET, POST, HEAD, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Max-Age": "86400",
         }
     )
 
@@ -428,6 +656,151 @@ async def sse_execute_options(tool_name: str):
             "Access-Control-Allow-Headers": "*"
         }
     )
+
+
+@app.post("/sse/call")
+async def sse_call_tool(request: Request):
+    """
+    SSE endpoint for calling MCP tools.
+    Handles tool execution requests from Langflow MCP client.
+    """
+    try:
+        body = await request.json()
+        method = body.get("method", "")
+        params = body.get("params", {})
+        request_id = body.get("id", 1)
+        
+        logger.info(f"SSE tool call: method={method}, params={params}")
+        
+        if method == "tools/call":
+            tool_name = params.get("name")
+            arguments = params.get("arguments", {})
+            
+            if not tool_name:
+                return JSONResponse({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
+                        "code": -32602,
+                        "message": "Invalid params: missing tool name"
+                    }
+                })
+            
+            if tool_name not in tools:
+                return JSONResponse({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
+                        "code": -32601,
+                        "message": f"Tool '{tool_name}' not found"
+                    }
+                })
+            
+            try:
+                # Execute tool
+                logger.info(f"Executing SSE tool: {tool_name} with arguments: {arguments}")
+                result = tools[tool_name](**arguments)
+                
+                return JSONResponse({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": str(result)
+                            }
+                        ]
+                    }
+                })
+            except Exception as e:
+                logger.exception(f"Error executing SSE tool {tool_name}")
+                return JSONResponse({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
+                        "code": -32603,
+                        "message": f"Tool execution failed: {str(e)}"
+                    }
+                })
+        elif method == "tools/list":
+            # Return list of available tools
+            mcp_tools = []
+            for name, tool_func in tools.items():
+                tool_schema = {
+                    "name": name,
+                    "description": tool_func.__doc__ or "No description available",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                }
+                
+                # Extract parameter information if available
+                if hasattr(tool_func, "tool_definition") and isinstance(tool_func.tool_definition, dict):
+                    definition = tool_func.tool_definition
+                    tool_schema["description"] = definition.get("description", tool_schema["description"])
+                    
+                    # Add parameter schema
+                    params_info = definition.get("parameters") or definition.get("parameter_descriptions")
+                    if isinstance(params_info, dict):
+                        for param_name, param_desc in params_info.items():
+                            tool_schema["inputSchema"]["properties"][param_name] = {
+                                "type": "string",
+                                "description": str(param_desc)
+                            }
+                            if param_name not in tool_schema["inputSchema"]["required"]:
+                                tool_schema["inputSchema"]["required"].append(param_name)
+                    elif isinstance(params_info, list):
+                        for param in params_info:
+                            if isinstance(param, dict) and "name" in param:
+                                tool_schema["inputSchema"]["properties"][param["name"]] = {
+                                    "type": param.get("type", "string"),
+                                    "description": param.get("description", "")
+                                }
+                                if param.get("required", False):
+                                    if param["name"] not in tool_schema["inputSchema"]["required"]:
+                                        tool_schema["inputSchema"]["required"].append(param["name"])
+                
+                mcp_tools.append(tool_schema)
+            
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "tools": mcp_tools
+                }
+            })
+        else:
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {
+                    "code": -32601,
+                    "message": f"Method '{method}' not found"
+                }
+            })
+            
+    except Exception as e:
+        logger.exception("Error processing SSE call request")
+        return JSONResponse({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {
+                "code": -32603,
+                "message": f"Internal error: {str(e)}"
+            }
+        }, status_code=500)
+
+
+@app.get("/tools")
+async def tools_alias():
+    return await list_tools()
+
+@app.get("/mcp/tools")
+async def mcp_tools_alias():
+    return await list_tools()
 
 
 def load_config():
@@ -487,6 +860,7 @@ def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="YouTrack MCP Server")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind the server to (HTTP mode only)")
+    parser.add_argument("--port", type=int, default=8000, help="Port to bind the server to (HTTP mode only)")
     parser.add_argument(
         "--log-level", 
         default="INFO",
@@ -582,9 +956,9 @@ def main():
     
     # Check if running in HTTP mode
     if args.transport == "http":
-        logger.info(f"Starting HTTP server on {args.host}")
+        logger.info(f"Starting HTTP server on {args.host}:{args.port}")
         import uvicorn
-        uvicorn.run(app, host=args.host, port=8000, log_level=args.log_level.lower())
+        uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level.lower())
     else:
         # Initialize MCP server with stdio transport
         server = YouTrackMCPServer(transport="stdio")

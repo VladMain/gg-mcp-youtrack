@@ -1,24 +1,24 @@
 FROM python:3.12-alpine
 
-WORKDIR /app
-
-# Install git and build dependencies for Python packages
+# Install system dependencies
 RUN apk add --no-cache git gcc musl-dev python3-dev libffi-dev openssl-dev
 
-# Copy requirements first to leverage Docker cache
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt && \
-    python -c "import mcp; print(dir(mcp))"
+# Set working directory
+WORKDIR /app
 
-# Copy the rest of the application
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the application code
 COPY . .
 
-# Default environment variables (will be overridden at runtime)
-ENV APP_VERSION="0.3.7"
-ENV MCP_SERVER_NAME="youtrack-mcp"
-ENV MCP_SERVER_DESCRIPTION="YouTrack MCP Server"
-ENV MCP_DEBUG="false"
-ENV YOUTRACK_VERIFY_SSL="true"
+# Expose port (will be overridden by cloud platforms)
+EXPOSE 8000
 
-# Run the MCP server in stdio mode for Claude integration by default
-CMD ["python", "main.py", "--transport", "stdio"]
+# Set default environment variables
+ENV YOUTRACK_CLOUD=false
+ENV PORT=8000
+
+# Run the server
+CMD python main.py --transport http --host 0.0.0.0 --port ${PORT}
