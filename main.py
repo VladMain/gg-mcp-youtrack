@@ -819,17 +819,24 @@ async def messages_endpoint(request: Request, session_id: str = Query(None)):
         params = body.get("params", {})
         req_id = body.get("id", None)
         logger.info(f"/messages/ request: method={method}, params={params}, session_id={session_id}, id={req_id}")
-        if method == "tools/list":
+        # MCP initialize
+        if method == "initialize":
+            result = {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": config.MCP_SERVER_NAME, "version": APP_VERSION}
+            }
+            response = {"jsonrpc": "2.0", "id": req_id, "result": result}
+            logger.info(f"/messages/ response: {response}")
+            return JSONResponse(response)
+        # MCP tools/list
+        elif method == "tools/list":
             mcp_tools = []
             for name, tool_func in tools.items():
                 tool_schema = {
                     "name": name,
                     "description": tool_func.__doc__ or "No description available",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
+                    "inputSchema": {"type": "object", "properties": {}, "required": []}
                 }
                 if hasattr(tool_func, "tool_definition") and isinstance(tool_func.tool_definition, dict):
                     definition = tool_func.tool_definition
@@ -837,77 +844,55 @@ async def messages_endpoint(request: Request, session_id: str = Query(None)):
                     params_info = definition.get("parameters") or definition.get("parameter_descriptions")
                     if isinstance(params_info, dict):
                         for param_name, param_desc in params_info.items():
-                            tool_schema["inputSchema"]["properties"][param_name] = {
-                                "type": "string",
-                                "description": str(param_desc)
-                            }
-                            if param_name not in tool_schema["inputSchema"]["required"]:
-                                tool_schema["inputSchema"]["required"].append(param_name)
+                            tool_schema["inputSchema"]["properties"][param_name] = {"type": "string", "description": str(param_desc)}
+                            tool_schema["inputSchema"]["required"].append(param_name)
                     elif isinstance(params_info, list):
                         for param in params_info:
                             if isinstance(param, dict) and "name" in param:
-                                tool_schema["inputSchema"]["properties"][param["name"]] = {
-                                    "type": param.get("type", "string"),
-                                    "description": param.get("description", "")
-                                }
+                                tool_schema["inputSchema"]["properties"][param["name"]] = {"type": param.get("type", "string"), "description": param.get("description", "")}
                                 if param.get("required", False):
                                     tool_schema["inputSchema"]["required"].append(param["name"])
                 mcp_tools.append(tool_schema)
-            return {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {"tools": mcp_tools}
-            }
+            response = {"jsonrpc": "2.0", "id": req_id, "result": {"tools": mcp_tools}}
+            logger.info(f"/messages/ response: {response}")
+            return JSONResponse(response)
+        # MCP tools/call
         elif method == "tools/call":
             tool_name = params.get("name")
             arguments = params.get("arguments", {})
             if not tool_name:
-                return {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "error": {"code": -32602, "message": "Invalid params: missing tool name"}
-                }
+                response = {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32602, "message": "Invalid params: missing tool name"}}
+                logger.info(f"/messages/ response: {response}")
+                return JSONResponse(response)
             if tool_name not in tools:
-                return {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "error": {"code": -32601, "message": f"Tool '{tool_name}' not found"}
-                }
+                response = {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": f"Tool '{tool_name}' not found"}}
+                logger.info(f"/messages/ response: {response}")
+                return JSONResponse(response)
             try:
                 logger.info(f"/messages/ executing tool: {tool_name} with arguments: {arguments}")
-                result = tools[tool_name](**arguments)
-                return {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "result": {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": str(result)
-                            }
-                        ]
-                    }
-                }
+                tool_func = tools[tool_name]
+                if asyncio.iscoroutinefunction(tool_func):
+                    result = await tool_func(**arguments)
+                else:
+                    result = tool_func(**arguments)
+                response = {"jsonrpc": "2.0", "id": req_id, "result": {"content": [{"type": "text", "text": str(result)}]}}
+                logger.info(f"/messages/ response: {response}")
+                return JSONResponse(response)
             except Exception as e:
                 logger.exception(f"Error executing MCP tool {tool_name}")
-                return {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "error": {"code": -32603, "message": f"Tool execution failed: {str(e)}"}
-                }
+                response = {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32603, "message": f"Tool execution failed: {str(e)}"}}
+                logger.info(f"/messages/ response: {response}")
+                return JSONResponse(response)
+        # Неизвестный метод
         else:
-            return {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "error": {"code": -32601, "message": f"Method '{method}' not found"}
-            }
+            response = {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": f"Method '{method}' not found"}}
+            logger.info(f"/messages/ response: {response}")
+            return JSONResponse(response)
     except Exception as e:
         logger.exception("Error processing /messages/ request")
-        return {
-            "jsonrpc": "2.0",
-            "id": None,
-            "error": {"code": -32603, "message": f"Internal error: {str(e)}"}
-        }
+        response = {"jsonrpc": "2.0", "id": None, "error": {"code": -32603, "message": f"Internal error: {str(e)}"}}
+        logger.info(f"/messages/ response: {response}")
+        return JSONResponse(response)
 
 
 @app.get("/tools")
