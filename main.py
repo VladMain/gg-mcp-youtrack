@@ -823,7 +823,7 @@ async def messages_endpoint(request: Request, session_id: str = Query(None)):
         if method == "initialize":
             result = {
                 "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
+                "capabilities": {"tools": {"list": True, "call": True}},
                 "serverInfo": {"name": config.MCP_SERVER_NAME, "version": APP_VERSION}
             }
             response = {"jsonrpc": "2.0", "id": req_id, "result": result}
