@@ -398,103 +398,73 @@ async def sse_endpoint(request: Request):
             endpoint = f"/messages/?session_id={session_id}"
             logger.info(f"SSE send: endpoint: {endpoint}")
             yield make_sse_message(endpoint, event="endpoint")
-            # Далее стандартные MCP события
-            try:
-                init_event = {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'protocolVersion': '2024-11-05', 'capabilities': {}}}
-                logger.info(f"SSE send: initialize: {init_event}")
-                yield make_sse_message(json.dumps(init_event), event="initialize")
-            except Exception as e:
-                logger.exception(f"SSE error on yield initialize: {e}")
-                raise
 
-            try:
-                capabilities = {
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "result": {
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": {
-                            "tools": {"list": True, "call": True}
-                        },
-                        "serverInfo": {
-                            "name": config.MCP_SERVER_NAME,
-                            "version": APP_VERSION
-                        }
-                    }
+            # 1. initialize (id=0)
+            init_event = {
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "initialize",
+                "params": {"protocolVersion": "2024-11-05", "capabilities": {}}
+            }
+            logger.info(f"SSE send: initialize: {init_event}")
+            yield make_sse_message(json.dumps(init_event), event="initialize")
+
+            # 2. capabilities (id=1)
+            capabilities = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {"tools": {"list": True, "call": True}},
+                    "serverInfo": {"name": config.MCP_SERVER_NAME, "version": APP_VERSION}
                 }
-                logger.info(f"SSE send: capabilities: {capabilities}")
-                yield make_sse_message(json.dumps(capabilities), event="capabilities")
-            except Exception as e:
-                logger.exception(f"SSE error on yield capabilities: {e}")
-                raise
+            }
+            logger.info(f"SSE send: capabilities: {capabilities}")
+            yield make_sse_message(json.dumps(capabilities), event="capabilities")
 
+            # 3. tools (id=2)
             logger.info(f"SSE tools dict: {len(tools)} tools: {list(tools.keys())}")
-            try:
-                if tools:
-                    mcp_tools = []
-                    for name, tool_func in tools.items():
-                        tool_schema = {
-                            "name": name,
-                            "description": tool_func.__doc__ or "No description available",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {},
-                                "required": []
-                            }
-                        }
-                        if hasattr(tool_func, "tool_definition") and isinstance(tool_func.tool_definition, dict):
-                            definition = tool_func.tool_definition
-                            tool_schema["description"] = definition.get("description", tool_schema["description"])
-                            params_info = definition.get("parameters") or definition.get("parameter_descriptions")
-                            if isinstance(params_info, dict):
-                                for param_name, param_desc in params_info.items():
-                                    tool_schema["inputSchema"]["properties"][param_name] = {
-                                        "type": "string",
-                                        "description": str(param_desc)
-                                    }
-                                    tool_schema["inputSchema"]["required"].append(param_name)
-                            elif isinstance(params_info, list):
-                                for param in params_info:
-                                    if isinstance(param, dict) and "name" in param:
-                                        tool_schema["inputSchema"]["properties"][param["name"]] = {
-                                            "type": param.get("type", "string"),
-                                            "description": param.get("description", "")
-                                        }
-                                        if param.get("required", False):
-                                            tool_schema["inputSchema"]["required"].append(param["name"])
-                        mcp_tools.append(tool_schema)
-                    tools_list_response = {
-                        "jsonrpc": "2.0",
-                        "id": 3,
-                        "result": {
-                            "tools": mcp_tools
-                        }
-                    }
-                    logger.info(f"SSE send: tools: {tools_list_response}")
-                    yield make_sse_message(json.dumps(tools_list_response), event="tools")
-            except Exception as e:
-                logger.exception(f"SSE error on yield tools: {e}")
-                raise
+            mcp_tools = []
+            for name, tool_func in tools.items():
+                tool_schema = {
+                    "name": name,
+                    "description": tool_func.__doc__ or "No description available",
+                    "inputSchema": {"type": "object", "properties": {}, "required": []}
+                }
+                if hasattr(tool_func, "tool_definition") and isinstance(tool_func.tool_definition, dict):
+                    definition = tool_func.tool_definition
+                    tool_schema["description"] = definition.get("description", tool_schema["description"])
+                    params_info = definition.get("parameters") or definition.get("parameter_descriptions")
+                    if isinstance(params_info, dict):
+                        for param_name, param_desc in params_info.items():
+                            tool_schema["inputSchema"]["properties"][param_name] = {"type": "string", "description": str(param_desc)}
+                            tool_schema["inputSchema"]["required"].append(param_name)
+                    elif isinstance(params_info, list):
+                        for param in params_info:
+                            if isinstance(param, dict) and "name" in param:
+                                tool_schema["inputSchema"]["properties"][param["name"]] = {"type": param.get("type", "string"), "description": param.get("description", "")}
+                                if param.get("required", False):
+                                    tool_schema["inputSchema"]["required"].append(param["name"])
+                mcp_tools.append(tool_schema)
+            tools_list_response = {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {"tools": mcp_tools}
+            }
+            logger.info(f"SSE send: tools: {tools_list_response}")
+            yield make_sse_message(json.dumps(tools_list_response), event="tools")
 
             heartbeat_count = 0
             while True:
-                await asyncio.sleep(30)  # Send heartbeat every 30 seconds
+                await asyncio.sleep(30)
                 heartbeat_count += 1
                 heartbeat = {
                     "jsonrpc": "2.0",
                     "method": "notifications/ping",
-                    "params": {
-                        "timestamp": time.time(),
-                        "count": heartbeat_count
-                    }
+                    "params": {"timestamp": time.time(), "count": heartbeat_count}
                 }
-                try:
-                    logger.info(f"SSE send: heartbeat: {heartbeat}")
-                    yield make_sse_message(json.dumps(heartbeat), event="heartbeat")
-                except Exception as e:
-                    logger.exception(f"SSE error on yield heartbeat: {e}")
-                    raise
-                
+                logger.info(f"SSE send: heartbeat: {heartbeat}")
+                yield make_sse_message(json.dumps(heartbeat), event="heartbeat")
         except asyncio.CancelledError:
             logger.info("SSE client disconnected")
             return
@@ -502,10 +472,7 @@ async def sse_endpoint(request: Request):
             logger.exception(f"Error in SSE event generator: {e}")
             error_response = {
                 "jsonrpc": "2.0",
-                "error": {
-                    "code": -32603,
-                    "message": f"Internal error: {str(e)}"
-                }
+                "error": {"code": -32603, "message": f"Internal error: {str(e)}"}
             }
             yield make_sse_message(json.dumps(error_response), event="error")
 
